@@ -1,0 +1,135 @@
+---
+title: "Visualising species hotspots from GBIF data"
+author: "Francesca Mancini"
+date: "17 April 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+In this tutorial we will a dataset from the Global Biodiversity Information Facility ([GBIF](http://www.gbif.org/developer/summary>)).
+
+So called "big data" are being increasingly used in the life sciences because they provide a lot of information on large scales and very fine resolution. However, these datasets can be quite tricky to work with.
+Most of the time the data is in the form of presence-only records. Volunteers, or social media users, take a picture or record the presence of a particular species and they report the time of the sighting and its location. Therefore what we have is thousands of points with temporal and spatial information attached to them.
+
+We will go through different steps to download, clean and visualise this type of data. We will start with downloading all the occurrences of red deer in the UK that are in the GBIF database. Then, we will produce density maps of this dataset to look for hotspots of red deer records.
+
+### Download red deer occurrences from GBIF
+
+First install and load all the package needed.
+
+```{r}
+library(rgbif)
+```
+
+The package `rgbif` offers an interface to the Web Service methods provided by GBIF. It includes functions for searching for taxonomic names, retrieving information on data providers, getting species occurrence records, and getting counts of occurrence records.
+
+In the GBIF dataset every country has a unique code. We can find out the code for the UK with this line of code.
+
+```{r}
+UK_code <- isocodes[grep("United Kingdom", isocodes$name), "code"]
+```
+
+Now we can download all the occurrence records for the atlantic puffin in the UK using the function `occ_search`.
+
+```{r}
+occur<-occ_search(scientificName = "Cervus elaphus", country = UK_code, hasCoordinate = TRUE, limit=3000, year = '2006,2016', return = "data")
+```
+This will return a dataset of all the occurrences of red deer recorded in the UK between 2006 and 2016 that have geographic coordinates.
+
+Have a look at the dataset.
+
+```{r}
+str(occur)
+```
+
+Now we can plot the occurrences on a map of the UK. `rgbif` has its own function to visualise the data, but the map is not particularly pretty.
+
+```{r}
+gbifmap(occur, region="UK")
+```
+<center><img src="../GBIFoccurr.png" alt="Img" style="width: 800px;"/></center>
+
+
+### Hotspot map
+
+Density maps made with `ggplot2` are a very good way to visualise hotspots of occurences data, and they are very pretty.
+
+First we dwonload a shapefile of the UK coastline available in the Global Administrative Areas (GADM) database. A shapefile is a format file for storing location and attribute information of geographic features, which can be represented by points, lines or polygons.
+
+```{r}
+library(raster)
+UK<-getData("GADM", country="GB", level=0)
+```
+
+We now change the coordinates system to UTM so the unit of measure in meters and not decimal degrees.
+
+```{r}
+library(rgdal)
+UK_proj <- spTransform(UK, CRS("+proj=utm +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0 "))
+```
+
+The UK shapefile is composed of many polygons, we can simplify it by dissolving the polygons. This will speed things up.
+
+```{r}
+library(rgeos)
+UK_diss <- gUnaryUnion(UK_proj)
+```
+
+We need to transform the red deer occurrences too. 
+First we make the object spatial.
+
+```{r}
+library(sp)
+coordinates(occur)<-c("decimalLongitude","decimalLatitude") #make it spatial
+
+crs.geo <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84")  # geographical, datum WGS84
+proj4string(occur) <- crs.geo                              # assign the coordinate system
+
+```
+
+Then we transform to UTM.
+
+```{r}
+# transform to UTM so they have the same coordinate system as the UK shapefile
+occur_proj <- spTransform(occur, CRS("+proj=utm +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0 "))
+
+```
+
+we need to transform our spatial datasets into a format that `ggplot2` is able to read.
+
+```{r}
+library(ggplot2)
+UK.Df <- fortify(UK_diss, region = "ID_0")
+gbif.points<-fortify(cbind(occur_proj@data,occur_proj@coords))
+```
+
+Now we can build our map with `ggplot2`. If you want to know more about the way you build plots in `ggplot2` here is a useful [link](http://vita.had.co.nz/papers/layered-grammar.pdf). One feature that you might want to take notice of is the use of `fill = ..level.., alpha = ..level..`. This syntax sets the colour and transparency of your density layer as dependent on the density itself. The `stat_` functions compute new values (in this case the `level` variable using the `kde2d` function from the package `MASS`) and create new dataframes. The `..level..` tells ggplot to reference that column in the newly built data frame. The two dots indicate that the variable `level` is not present in the original data, but has been computed by the `stat_` function.
+
+```{r}
+plot.years.gbif <- ggplot(data=gbif.points,aes(x=decimalLongitude, y=decimalLatitude))+
+  geom_polygon(data=UK.Df,aes(x=long, y=lat, group=group), 
+               color="black", fill="gray82") + coord_fixed() +
+  geom_point(color="dodgerblue4",size=2,shape=".")+
+  stat_density2d(aes(x = decimalLongitude, 
+                     y = decimalLatitude,  fill = ..level.., alpha = ..level..), 
+                 geom = "polygon", colour = "grey95",size=0.3) +
+  scale_fill_gradient(low = "yellow", high = "red") +
+  scale_alpha(range = c(.25, .5), guide = FALSE) +
+  facet_wrap(~ year)+
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(),  
+        axis.ticks.x=element_blank(),axis.title.y=element_blank(),   
+        axis.text.y=element_blank(), axis.ticks.y=element_blank(),
+        text=element_text(size=18),legend.position = c(.9, .15),       
+        panel.grid.major = element_blank(),                            
+        panel.background = element_blank())                            
+
+plot.years.gbif
+
+
+```
+<center><img src="../FlickrDensity.png" alt="Img" style="width: 800px;"/></center>
+
